@@ -27,7 +27,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	"k8s.io/klog/v2"
-	"k8s.io/mount-utils"
 
 	"sigs.k8s.io/ibm-powervs-block-csi-driver/pkg/cloud"
 	"sigs.k8s.io/ibm-powervs-block-csi-driver/pkg/device"
@@ -43,9 +42,6 @@ const (
 	FSTypeExt4 = "ext4"
 	// FSTypeXfs represents te xfs filesystem type.
 	FSTypeXfs = "xfs"
-	// default file system type to be used when it is not provided.
-	defaultFsType = FSTypeExt4
-
 	// defaultMaxVolumesPerInstance is the limit of volumes can be attached in the PowerVS environment.
 	// The Virtual Server instance can have more than 127 data volumes (upto 500) but with certain limitations.
 	// See: https://cloud.ibm.com/docs/power-iaas?topic=power-iaas-creating-power-virtual-server#config-large-vol
@@ -55,6 +51,11 @@ const (
 var (
 	NewDevice    = device.NewLinuxDevice
 	GetDeviceWWN = device.GetDeviceWWN
+
+	// defaultFsType (the file system used when none is requested) and
+	// validFSTypes (the set the driver will format or mount; others are
+	// rejected before reaching mkfs or mount) depend on the node's OS: see
+	// node_platform_default.go and node_platform_aix.go.
 
 	// nodeCaps represents the capability of node service.
 	nodeCaps = []csi.NodeServiceCapability_RPC_Type{
@@ -150,6 +151,9 @@ func (d *nodeService) nodeStageVolume(req *csi.NodeStageVolumeRequest) error {
 	volCap := req.GetVolumeCapability()
 	if !isValidVolumeCapabilities([]*csi.VolumeCapability{volCap}) {
 		return status.Error(codes.InvalidArgument, "Volume capability not supported")
+	}
+	if err := checkNodeVolumeCapability(volCap); err != nil {
+		return err
 	}
 
 	wwn, ok := req.PublishContext[WWNKey]
@@ -401,8 +405,7 @@ func (d *nodeService) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandV
 		return nil, status.Errorf(codes.Internal, "failed to get device from volume path %s volumeID %s", volumePath, volumeID)
 	}
 
-	// TODO: refactor Mounter to expose a mount.SafeFormatAndMount object
-	r := mount.NewResizeFs(d.mounter.(*NodeMounter).Exec)
+	r := newResizer(d.mounter)
 
 	// TODO: lock per volume ID to have some idempotency
 	if _, err := r.Resize(devicePath, volumePath); err != nil {
@@ -442,6 +445,9 @@ func (d *nodeService) NodePublishVolume(ctx context.Context, req *csi.NodePublis
 
 	if !isValidVolumeCapabilities([]*csi.VolumeCapability{volCap}) {
 		return nil, status.Error(codes.InvalidArgument, "Volume capability not supported")
+	}
+	if err := checkNodeVolumeCapability(volCap); err != nil {
+		return nil, err
 	}
 
 	wwn, ok := req.PublishContext[WWNKey]
