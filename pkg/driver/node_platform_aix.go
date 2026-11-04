@@ -26,6 +26,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/sys/unix"
 
+	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
 	"k8s.io/utils/exec"
 
@@ -66,8 +67,7 @@ func newNodeMounter() Mounter {
 // file systems live on logical volumes, so this prepares the volume's volume
 // group, logical volume and file system (creating them on a blank disk,
 // importing them from one that already has them) and mounts the file system
-// through its /etc/filesystems stanza, which carries its log= option. See
-// pkg/aixlvm.
+// with its log. See pkg/aixlvm.
 func (m *NodeMounter) FormatAndMount(source, target, fstype string, options []string) error {
 	ctx := context.Background()
 	disk := strings.TrimPrefix(source, "/dev/")
@@ -75,10 +75,36 @@ func (m *NodeMounter) FormatAndMount(source, target, fstype string, options []st
 	if err != nil {
 		return err
 	}
-	if _, err := aixlvm.Default.Prepare(ctx, disk, wwn, strings.ToLower(fstype), target); err != nil {
+	vol, err := aixlvm.Default.Prepare(ctx, disk, wwn, strings.ToLower(fstype), target)
+	if err != nil {
 		return err
 	}
-	return aixlvm.Default.Mount(ctx, target, options)
+	return aixlvm.Default.Mount(ctx, vol, target, options)
+}
+
+// releaseStagedDevice releases the volume behind the device that was
+// mounted at the staging path: its volume group is exported and its disk
+// removed.
+func releaseStagedDevice(_ *nodeService, deviceName string) error {
+	return device.ReleaseByPath(deviceName)
+}
+
+// cleanupUnmountedStage finishes an unstage that was interrupted after the
+// unmount: the staging path is no longer mounted, but its volume group may
+// still be imported, found by the /etc/filesystems stanza for the path.
+func cleanupUnmountedStage(stagingTarget string) error {
+	lv, err := aixlvm.Default.StagedLV(context.Background(), stagingTarget)
+	if err != nil || lv == "" {
+		return err
+	}
+	klog.Infof("%s is not mounted but %s is still imported for it; releasing it", stagingTarget, lv)
+	return device.ReleaseByPath("/dev/" + lv)
+}
+
+// beforeExit waits for an LVM change in progress to finish and blocks new
+// ones, so stopping the plugin never cuts one short.
+func beforeExit() {
+	aixlvm.Default.Quiesce()
 }
 
 // aixResizer grows a JFS or JFS2 file system after its volume has grown.

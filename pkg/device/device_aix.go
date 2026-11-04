@@ -58,8 +58,9 @@ type Device struct {
 
 var (
 	scanLock = &sync.Mutex{}
-	// run is the command runner, replaceable in tests.
-	run aixlvm.Runner = aixlvm.ExecRunner{}
+	// run runs the query commands and cfgmgr. They get a timeout; the
+	// commands that change LVM state run through aixlvm without one.
+	run aixlvm.Runner = aixlvm.ExecRunner{Timeout: 10 * time.Minute}
 )
 
 // NewLinuxDevice returns the device for a WWN.
@@ -124,23 +125,50 @@ func (d *Device) CreateDevice() error {
 // DeleteDevice exports the volume group on the disk and removes the disk.
 // A disk in a volume group the driver did not create is refused.
 func (d *Device) DeleteDevice() error {
-	ctx := context.Background()
-	disk := strings.TrimPrefix(d.Mapper, "/dev/")
-	if !aixDiskNameRe.MatchString(disk) {
-		return fmt.Errorf("invalid disk %q", d.Mapper)
-	}
-	if err := aixlvm.Default.Release(ctx, disk); err != nil {
+	if err := ReleaseByPath(d.Mapper); err != nil {
 		return err
 	}
-	var err error
-	for try := 0; try < 3; try++ {
-		if _, err = run.Run(ctx, "rmdev", "-dl", disk); err == nil {
-			d.Mapper, d.Slaves = "", 0
-			return nil
+	d.Mapper, d.Slaves = "", 0
+	return nil
+}
+
+// ReleaseByPath exports the volume group behind a device path (the disk, or
+// the logical volume the mount table shows) and removes the disk with
+// rmdev -dl. Unlike Populate it does not need the disk to have an Enabled
+// path, so a volume whose paths are already gone is still cleaned up.
+func ReleaseByPath(pathName string) error {
+	ctx := context.Background()
+	disk, err := diskOfPath(ctx, pathName)
+	if err != nil {
+		return err
+	}
+	for try := 0; ; try++ {
+		err = aixlvm.Default.ReleaseAndRemove(ctx, disk)
+		if err == nil || try == 2 {
+			break
 		}
 		time.Sleep(5 * time.Second)
 	}
-	return fmt.Errorf("removing %s: %w", disk, err)
+	if err != nil {
+		return fmt.Errorf("releasing %s: %w", disk, err)
+	}
+	return nil
+}
+
+// diskOfPath maps /dev/hdiskN, /dev/rhdiskN or /dev/<lv> to the disk name.
+func diskOfPath(ctx context.Context, pathName string) (string, error) {
+	name := strings.TrimPrefix(pathName, "/dev/")
+	if strings.HasPrefix(name, "r") && aixDiskNameRe.MatchString(name[1:]) {
+		name = name[1:]
+	}
+	if aixDiskNameRe.MatchString(name) {
+		return name, nil
+	}
+	disk, err := aixlvm.Default.DiskOfLV(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("finding the disk for %s: %w", pathName, err)
+	}
+	return disk, nil
 }
 
 // GetDeviceWWN returns the WWN of the volume behind a device path: a disk
@@ -148,16 +176,9 @@ func (d *Device) DeleteDevice() error {
 // is mounted from, as the mount table shows it.
 func GetDeviceWWN(pathName string) (string, error) {
 	ctx := context.Background()
-	name := strings.TrimPrefix(pathName, "/dev/")
-	if strings.HasPrefix(name, "r") && aixDiskNameRe.MatchString(name[1:]) {
-		name = name[1:]
-	}
-	if !aixDiskNameRe.MatchString(name) {
-		disk, err := aixlvm.Default.DiskOfLV(ctx, name)
-		if err != nil {
-			return "", fmt.Errorf("finding the disk for %s: %w", pathName, err)
-		}
-		name = disk
+	name, err := diskOfPath(ctx, pathName)
+	if err != nil {
+		return "", err
 	}
 	out, err := run.Run(ctx, "odmget", "-q", "name="+name+" and attribute=unique_id", "CuAt")
 	if err != nil {
@@ -213,6 +234,8 @@ func removeStaleDisk(ctx context.Context, disk string) {
 			return
 		}
 	}
+	aixlvm.Default.Lock()
+	defer aixlvm.Default.Unlock()
 	if _, err := run.Run(ctx, "rmdev", "-dl", disk); err != nil {
 		klog.Warningf("removing stale disk %s: %v", disk, err)
 	}
@@ -240,8 +263,12 @@ func rescanWithLock() error {
 }
 
 // rescan configures new disks behind the Fibre Channel and virtual SCSI
-// adapters, or runs a full cfgmgr if there are none.
+// adapters, or runs a full cfgmgr if there are none. It holds the LVM lock,
+// so disks are not configured or renumbered while a volume group is being
+// made, imported or exported.
 func rescan(ctx context.Context) error {
+	aixlvm.Default.Lock()
+	defer aixlvm.Default.Unlock()
 	out, err := run.Run(ctx, "lsdev", "-Cc", "adapter", "-F", "name")
 	if err != nil {
 		return err

@@ -59,6 +59,16 @@ func checkNodeVolumeCapability(_ *csi.VolumeCapability) error {
 	return nil
 }
 
+func releaseStagedDevice(d *nodeService, deviceName string) error {
+	return d.deleteDevice(deviceName)
+}
+
+func cleanupUnmountedStage(_ string) error {
+	return nil
+}
+
+func beforeExit() {}
+
 func fsInfo(path string) (int64, int64, int64, int64, int64, int64, error) {
 	return fs.Info(path)
 }

@@ -152,6 +152,10 @@ func (d *Driver) startKubeletRegistration(csiSocket string) error {
 		if csiSocket != "" {
 			_ = os.Remove(csiSocket)
 		}
+		// Let a volume group or file system change in progress finish. The
+		// gRPC server is not stopped first: Serve returning would end main
+		// before this does.
+		beforeExit()
 		klog.Flush()
 		os.Exit(0)
 	}()

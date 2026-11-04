@@ -34,8 +34,10 @@ limitations under the License.
 // rebooted node does not grab a volume that has since moved elsewhere.
 //
 // Nothing here formats a disk that holds data it does not recognise: a disk
-// with no VGDA is only given a volume group if its first 64 KiB are blank
-// (an AIX IPL record carrying just a PVID is allowed).
+// with no VGDA is only given a volume group if its first 1 MiB is blank (an
+// AIX IPL record carrying just a PVID is allowed), and an imported volume
+// group that turns out not to hold this volume's file system is exported
+// again.
 //
 // Commands run through a Runner, so the sequencing is unit-tested on Linux
 // against canned AIX output. The command output formats are from the AIX 7.3
