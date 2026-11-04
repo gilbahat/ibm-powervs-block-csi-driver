@@ -104,6 +104,9 @@ To view driver debug logs, run the CSI driver with `-v=5` command line option
 
 To enable PowerVS debug logs, run the CSI driver with `-debug=true` command line option.
 
+## AIX nodes
+The node plugin also runs on IBM AIX, where it makes JFS2 or JFS file systems. It runs on the host as an SRC subsystem rather than as a DaemonSet pod; the controller stays on Linux. See [docs/aix.md](docs/aix.md).
+
 ## Examples
 Make sure you follow the [Prerequisites](README.md#Prerequisites) before the examples:
 * [Dynamic Provisioning](./examples/kubernetes/dynamic-provisioning)

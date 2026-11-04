@@ -1,3 +1,5 @@
+//go:build !aix
+
 /*
 Copyright 2023 The Kubernetes Authors.
 

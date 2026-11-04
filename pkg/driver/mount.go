@@ -20,7 +20,6 @@ import (
 	"os"
 
 	"k8s.io/mount-utils"
-	"k8s.io/utils/exec"
 )
 
 // Mounter is an interface for mount operations.
@@ -38,13 +37,9 @@ type NodeMounter struct {
 	mount.SafeFormatAndMount
 }
 
-func newNodeMounter() Mounter {
-	return &NodeMounter{
-		mount.SafeFormatAndMount{
-			Interface: mount.New(""),
-			Exec:      exec.New(),
-		},
-	}
+// resizer grows a mounted file system to fill its device.
+type resizer interface {
+	Resize(devicePath string, deviceMountPath string) (bool, error)
 }
 
 func (m *NodeMounter) GetDeviceName(mountPath string) (string, int, error) {

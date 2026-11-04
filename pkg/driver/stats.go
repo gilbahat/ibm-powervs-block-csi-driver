@@ -9,8 +9,6 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
-
-	"k8s.io/kubernetes/pkg/volume/util/fs"
 )
 
 // StatsUtils.
@@ -63,7 +61,8 @@ func (su *VolumeStatUtils) DeviceInfo(devicePath string) (int64, error) {
 	return gotSizeBytes, nil
 }
 
-// FSInfo returns the information related to the FS.
+// FSInfo returns the information related to the FS: available, capacity
+// and used bytes, then total, free and used inodes.
 func (su *VolumeStatUtils) FSInfo(path string) (int64, int64, int64, int64, int64, int64, error) {
-	return fs.Info(path)
+	return fsInfo(path)
 }
