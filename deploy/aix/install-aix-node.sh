@@ -73,8 +73,9 @@ if [ -n "$(find "${API_KEY_FILE}" -perm -004 2>/dev/null)" ]; then
 	fail "${API_KEY_FILE} is world-readable; chmod 600 it"
 fi
 if [ -z "${POWERVS_CLOUD_INSTANCE_ID}" ] || [ -z "${POWERVS_ZONE}" ] || [ -z "${POWERVS_INSTANCE_ID}" ]; then
-	[ -n "${KUBECONFIG}" ] && [ -r "${KUBECONFIG}" ] ||
+	if [ -z "${KUBECONFIG}" ] || [ ! -r "${KUBECONFIG}" ]; then
 		fail "set KUBECONFIG (e.g. the kubelet's kubeconfig), or all of POWERVS_CLOUD_INSTANCE_ID, POWERVS_ZONE and POWERVS_INSTANCE_ID"
+	fi
 fi
 for cmd in mkvg importvg exportvg crfs chfs cfgmgr lspath; do
 	whence "${cmd}" >/dev/null 2>&1 || fail "${cmd} not found"
@@ -93,7 +94,9 @@ umask 077
 	for v in POWERVS_CLOUD_INSTANCE_ID POWERVS_ZONE POWERVS_INSTANCE_ID \
 		IBMCLOUD_IAM_API_ENDPOINT IBMCLOUD_RESOURCE_CONTROLLER_ENDPOINT; do
 		eval "val=\${${v}}"
-		[ -n "${val}" ] && echo "${v}=${val}"
+		if [ -n "${val}" ]; then
+			echo "${v}=${val}"
+		fi
 	done
 } > "${ENV_FILE}"
 umask 022
@@ -110,7 +113,9 @@ chmod 0755 "${WRAPPER}"
 
 ARGS="node --logtostderr --v=2 --endpoint=unix://${SOCK}"
 ARGS="${ARGS} --kubelet-registration-path=${SOCK} --plugin-registration-dir=${REG_DIR}"
-[ -n "${KUBECONFIG}" ] && ARGS="${ARGS} --kubeconfig=${KUBECONFIG}"
+if [ -n "${KUBECONFIG}" ]; then
+	ARGS="${ARGS} --kubeconfig=${KUBECONFIG}"
+fi
 ARGS="${ARGS} ${EXTRA_ARGS}"
 
 if lssrc -s "${SUBSYS}" >/dev/null 2>&1; then
@@ -120,8 +125,9 @@ fi
 
 # -R: restart on abnormal exit (a failed kubelet registration exits 1)
 # -Q: one instance; -S -n 15 -f 9: stop with SIGTERM, force with SIGKILL
+# -w 600: on stop the plugin waits for an LVM change in progress, give it time
 mkssys -s "${SUBSYS}" -p "${WRAPPER}" -a "${ARGS}" -u 0 -G "${GROUP}" \
-	-R -Q -S -n 15 -f 9 -w 30 -o "${LOG}" -e "${LOG}"
+	-R -Q -S -n 15 -f 9 -w 600 -o "${LOG}" -e "${LOG}"
 
 # inittab identifiers are at most 14 characters.
 ITAB_ID=$(echo "${SUBSYS}" | tr -cd '[:alnum:]' | cut -c1-14)
