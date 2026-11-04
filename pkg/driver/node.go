@@ -300,6 +300,11 @@ func (d *nodeService) nodeUnstageVolume(req *csi.NodeUnstageVolumeRequest) error
 	}
 	if count == 0 {
 		klog.V(5).Infof("volume %s not in staged state as the device is not mounted", volumeID)
+		// On AIX an earlier unstage may have stopped after the unmount and
+		// left the volume group imported; elsewhere this does nothing.
+		if err := cleanupUnmountedStage(stagingTarget); err != nil {
+			return status.Errorf(codes.Internal, "failed to release volume %s after unmount: %v", volumeID, err)
+		}
 		return nil
 	}
 
@@ -324,7 +329,7 @@ func (d *nodeService) nodeUnstageVolume(req *csi.NodeUnstageVolumeRequest) error
 		return status.Errorf(codes.Internal, "failed to delete device as likely mounted for volumeID %s: %v", volumeID, err)
 	}
 
-	err = d.deleteDevice(deviceName)
+	err = releaseStagedDevice(d, deviceName)
 	if err != nil {
 		return status.Error(codes.Internal, fmt.Sprintf("error deleting device %s for volumeID %s: %v", deviceName, volumeID, err))
 	}

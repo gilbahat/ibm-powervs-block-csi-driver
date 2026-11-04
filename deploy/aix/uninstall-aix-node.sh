@@ -36,6 +36,8 @@ rmitab "${ITAB_ID}" >/dev/null 2>&1
 rm -f "${KUBELET_DIR}/plugins_registry/powervs.csi.ibm.com-reg.sock" \
 	"${KUBELET_DIR}/plugins/powervs.csi.ibm.com/csi.sock"
 rm -f "$(dirname "${BIN}")/powervs-csi-node"
-[ "${KEEP_CONFIG}" = "1" ] || rm -rf /etc/ibm-powervs-csi
+if [ "${KEEP_CONFIG}" != "1" ]; then
+	rm -rf /etc/ibm-powervs-csi
+fi
 
 echo "${SUBSYS} removed"

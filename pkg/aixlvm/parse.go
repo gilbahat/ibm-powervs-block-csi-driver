@@ -82,6 +82,7 @@ func ParseLsvg(out string) (VGInfo, error) {
 type LV struct {
 	Name       string
 	Type       string
+	LPs        int64
 	State      string
 	MountPoint string
 }
@@ -111,7 +112,8 @@ func ParseLsvgL(out string) []LV {
 		if len(f) < 7 {
 			continue
 		}
-		lvs = append(lvs, LV{Name: f[0], Type: f[1], State: f[5], MountPoint: strings.Join(f[6:], " ")})
+		lps, _ := strconv.ParseInt(f[2], 10, 64)
+		lvs = append(lvs, LV{Name: f[0], Type: f[1], LPs: lps, State: f[5], MountPoint: strings.Join(f[6:], " ")})
 	}
 	return lvs
 }
@@ -175,8 +177,8 @@ func ParseLsfsC(out string) []Stanza {
 
 // BlankCheckBytes is how much of a disk IsBlank looks at. It covers the
 // signatures of the formats a reused volume is likely to carry: MBR and GPT,
-// Linux LVM2, ext2/3/4, XFS and Btrfs (64 KiB), and AIX VGDAs.
-const BlankCheckBytes = 64 * 1024
+// Linux LVM2, ext2/3/4, XFS, Btrfs (superblock at 64 KiB) and AIX VGDAs.
+const BlankCheckBytes = 1024 * 1024
 
 // aixIPLMagic is "IBMA" in EBCDIC, which starts an AIX IPL record. chdev
 // -a pv=yes writes one to hold a PVID, which does not make a disk non-blank.

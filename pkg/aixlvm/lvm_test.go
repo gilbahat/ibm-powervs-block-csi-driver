@@ -50,7 +50,7 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte
 	return []byte(f.out[line]), nil
 }
 
-func newManager(f *fakeRunner, head []byte) *Manager {
+func newManager(f Runner, head []byte) *Manager {
 	return &Manager{Runner: f, ReadHead: func(string, int) ([]byte, error) { return head, nil }}
 }
 
@@ -90,17 +90,19 @@ func TestPrepareBlankDiskJFS2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if vol.Device() != "/dev/"+testLV || vol.VG != testVG {
+	if vol.Device() != "/dev/"+testLV || vol.VG != testVG || vol.Log != "INLINE" {
 		t.Errorf("got %+v", vol)
 	}
 	want := []string{
 		"lspv",
 		"lqueryvg -p hdisk4 -v",
-		"mkvg -S -n -y " + testVG + " hdisk4",
+		"mkvg -S -n -s 64 -P 512 -y " + testVG + " hdisk4",
 		"lsvg -l " + testVG,
+		"lsfs -c",
 		"lsvg " + testVG,
-		"mklv -y " + testLV + " -t jfs2 " + testVG + " 1599",
+		"mklv -y " + testLV + " -t jfs2 -x 1599 " + testVG + " 1599",
 		"crfs -v jfs2 -d " + testLV + " -m " + testMP + " -A no -p rw -a logname=INLINE",
+		"lsvg -l " + testVG,
 		"lsfs -c",
 	}
 	if !reflect.DeepEqual(f.calls, want) {
@@ -113,15 +115,19 @@ func TestPrepareBlankDiskJFSLeavesRoomForLog(t *testing.T) {
 		out: map[string]string{
 			"lspv":              lspv(NoVG),
 			"lsvg " + testVG:    lsvgOut,
-			"lsvg -l " + testVG: lsvgL(),
+			"lsvg -l " + testVG: lsvgL("loglv03             jfslog     1       1       1    closed/syncd  N/A"),
 			"lsfs -c":           stanzas(testMP + ":/dev/" + testLV + ":jfs:::0:rw:no:no"),
 		},
 		fail: map[string]bool{"lqueryvg -p hdisk4 -v": true},
 	}
-	if _, err := newManager(f, make([]byte, BlankCheckBytes)).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS, testMP); err != nil {
+	vol, err := newManager(f, make([]byte, BlankCheckBytes)).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS, testMP)
+	if err != nil {
 		t.Fatal(err)
 	}
-	mustCall(t, f, "mklv -y "+testLV+" -t jfs "+testVG+" 1598")
+	if vol.Log != "/dev/loglv03" {
+		t.Errorf("log %q", vol.Log)
+	}
+	mustCall(t, f, "mklv -y "+testLV+" -t jfs -x 1598 "+testVG+" 1598")
 	mustCall(t, f, "crfs -v jfs -d "+testLV+" -m "+testMP+" -A no -p rw")
 }
 
@@ -139,9 +145,10 @@ func TestPrepareRefusesNonBlankDisk(t *testing.T) {
 func TestPrepareImportsExistingVolume(t *testing.T) {
 	f := &fakeRunner{
 		out: map[string]string{
-			"lspv":              lspv(NoVG),
-			"lsvg -l " + testVG: lsvgL(testLV + "    jfs2       1599    1599    1    closed/syncd  /old/mount"),
-			"lsfs -c":           stanzas(),
+			"lspv":                  lspv(NoVG),
+			"lqueryvg -p hdisk4 -v": "00c8b12f00004c000000017a1b2c3d4e\n",
+			"lsvg -l " + testVG:     lsvgL(testLV + "    jfs2       1599    1599    1    closed/syncd  /old/mount"),
+			"lsfs -c":               stanzas(),
 		},
 	}
 	if _, err := newManager(f, nil).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS2, testMP); err != nil {
@@ -149,6 +156,7 @@ func TestPrepareImportsExistingVolume(t *testing.T) {
 	}
 	mustCall(t, f, "importvg -y "+testVG+" hdisk4")
 	mustCall(t, f, "chvg -a n "+testVG)
+	mustNotCall(t, f, "exportvg")
 	mustCall(t, f, "chlv -L "+testMP+" "+testLV)
 	mustCall(t, f, "imfs -l "+testLV)
 	mustNotCall(t, f, "mkvg")
@@ -197,8 +205,9 @@ func TestPrepareRefusesOtherVolumeGroups(t *testing.T) {
 func TestPrepareRefusesImportedVGWithoutOurLV(t *testing.T) {
 	f := &fakeRunner{
 		out: map[string]string{
-			"lspv":              lspv(NoVG),
-			"lsvg -l " + testVG: lsvgL("fslv00              jfs2       10      10      1    closed/syncd  /data"),
+			"lspv":                  lspv(NoVG),
+			"lqueryvg -p hdisk4 -v": "00c8b12f00004c000000017a1b2c3d4e\n",
+			"lsvg -l " + testVG:     lsvgL("fslv00              jfs2       10      10      1    closed/syncd  /data"),
 		},
 	}
 	_, err := newManager(f, nil).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS2, testMP)
@@ -206,6 +215,10 @@ func TestPrepareRefusesImportedVGWithoutOurLV(t *testing.T) {
 		t.Fatalf("got %v, want ErrInUse", err)
 	}
 	mustNotCall(t, f, "mklv")
+	mustNotCall(t, f, "chvg")
+	// The refused volume group is left as found: not imported here.
+	mustCall(t, f, "varyoffvg "+testVG)
+	mustCall(t, f, "exportvg "+testVG)
 }
 
 func TestPrepareRefusesFSTypeMismatch(t *testing.T) {
@@ -236,7 +249,7 @@ func TestPrepareRetriesAfterJFSLogLeftBehind(t *testing.T) {
 	if _, err := newManager(f, nil).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS, testMP); err != nil {
 		t.Fatal(err)
 	}
-	mustCall(t, f, "mklv -y "+testLV+" -t jfs "+testVG+" 1598")
+	mustCall(t, f, "mklv -y "+testLV+" -t jfs -x 1598 "+testVG+" 1598")
 }
 
 func TestPrepareRemovesLVWhenCrfsFails(t *testing.T) {
@@ -271,13 +284,18 @@ func TestPrepareRejectsBadInput(t *testing.T) {
 func TestMount(t *testing.T) {
 	f := &fakeRunner{}
 	m := newManager(f, nil)
-	if err := m.Mount(context.Background(), testMP, []string{"rbrw", "noatime"}); err != nil {
+	jfs2 := &Volume{VG: testVG, LV: testLV, FSType: FSTypeJFS2, Log: "INLINE"}
+	jfs := &Volume{VG: testVG, LV: testLV, FSType: FSTypeJFS, Log: "/dev/loglv00"}
+	if err := m.Mount(context.Background(), jfs2, testMP, []string{"rbrw", "noatime"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Mount(context.Background(), testMP, nil); err != nil {
+	if err := m.Mount(context.Background(), jfs, testMP, nil); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"mount -o rbrw,noatime " + testMP, "mount " + testMP}
+	want := []string{
+		"mount -v jfs2 -o log=INLINE,rbrw,noatime /dev/" + testLV + " " + testMP,
+		"mount -v jfs -o log=/dev/loglv00 /dev/" + testLV + " " + testMP,
+	}
 	if !reflect.DeepEqual(f.calls, want) {
 		t.Errorf("calls %v, want %v", f.calls, want)
 	}
@@ -341,14 +359,19 @@ func TestReleaseWithoutVGIsNoop(t *testing.T) {
 func TestGrow(t *testing.T) {
 	f := &fakeRunner{
 		out: map[string]string{
-			"lslv " + testLV: "LOGICAL VOLUME:     " + testLV + "        VOLUME GROUP:   " + testVG + "\n",
-			"lsvg " + testVG: strings.Replace(lsvgOut, "FREE PPs:       1599 (102336", "FREE PPs:       16 (1024", 1),
+			"lslv " + testLV:    "LOGICAL VOLUME:     " + testLV + "        VOLUME GROUP:   " + testVG + "\n",
+			"lsvg " + testVG:    strings.Replace(lsvgOut, "FREE PPs:       1599 (102336", "FREE PPs:       16 (1024", 1),
+			"lsvg -l " + testVG: lsvgL(testLV + "    jfs2       1599    1599    1    open/syncd    " + testMP),
 		},
+		// chvg -g fails when the disk has not grown since the last call;
+		// a retry must still reach chfs.
+		fail: map[string]bool{"chvg -g " + testVG: true},
 	}
 	if err := newManager(f, nil).Grow(context.Background(), testLV, testMP); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"lslv " + testLV, "chvg -g " + testVG, "lsvg " + testVG, "chfs -a size=+1024M " + testMP}
+	want := []string{"lslv " + testLV, "chvg -g " + testVG, "lsvg " + testVG, "lsvg -l " + testVG,
+		"chlv -x 1615 " + testLV, "chfs -a size=+1024M " + testMP}
 	if !reflect.DeepEqual(f.calls, want) {
 		t.Errorf("calls %v, want %v", f.calls, want)
 	}
@@ -440,4 +463,122 @@ func TestNamesDifferForSameSequenceOnOtherControllers(t *testing.T) {
 	if lower != a {
 		t.Errorf("name depends on WWN case: %q vs %q", lower, a)
 	}
+}
+
+func TestPrepareRenamesClonedLV(t *testing.T) {
+	// A clone of another driver volume carries that volume's logical volume.
+	const srcLV = "pvl0123456789ab"
+	f := &renamingRunner{fakeRunner: fakeRunner{out: map[string]string{
+		"lspv":                  lspv(NoVG),
+		"lqueryvg -p hdisk4 -v": "00c8b12f00004c000000017a1b2c3d4e\n",
+		"lsvg -l " + testVG:     lsvgL(srcLV + "    jfs2       1599    1599    1    closed/syncd  " + testMP),
+		"lsfs -c":               stanzas(testMP + ":/dev/" + testLV + ":jfs2:::0:rw:no:no"),
+	}}, rename: "chlv -n " + testLV + " " + srcLV,
+		after: lsvgL(testLV + "    jfs2       1599    1599    1    closed/syncd  " + testMP)}
+	if _, err := newManager(f, nil).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS2, testMP); err != nil {
+		t.Fatal(err)
+	}
+	mustCall(t, &f.fakeRunner, "imfs -x -l "+srcLV)
+	mustCall(t, &f.fakeRunner, "chlv -n "+testLV+" "+srcLV)
+	mustCall(t, &f.fakeRunner, "chvg -a n "+testVG)
+}
+
+// renamingRunner changes the lsvg -l output once the rename command runs.
+type renamingRunner struct {
+	fakeRunner
+	rename, after string
+}
+
+func (r *renamingRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	out, err := r.fakeRunner.Run(ctx, name, args...)
+	if r.fakeRunner.calls[len(r.fakeRunner.calls)-1] == r.rename {
+		r.out["lsvg -l "+testVG] = r.after
+	}
+	return out, err
+}
+
+func TestPrepareRefusesTwoDriverLVs(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{
+		"lspv":                  lspv(NoVG),
+		"lqueryvg -p hdisk4 -v": "00c8b12f00004c000000017a1b2c3d4e\n",
+		"lsvg -l " + testVG: lsvgL("pvl0123456789ab    jfs2       10      10      1    closed/syncd  /a",
+			"pvlba9876543210    jfs2       10      10      1    closed/syncd  /b"),
+	}}
+	if _, err := newManager(f, nil).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS2, testMP); !errors.Is(err, ErrInUse) {
+		t.Fatalf("got %v, want ErrInUse", err)
+	}
+	mustNotCall(t, f, "chlv")
+	mustCall(t, f, "exportvg "+testVG)
+}
+
+func TestPrepareFinishesHalfMadeFS(t *testing.T) {
+	// crfs failed and so did the rmlv after it: the logical volume is there
+	// with no stanza.
+	f := &fakeRunner{out: map[string]string{
+		"lspv":              lspv(testVG),
+		"lsvg -o":           testVG,
+		"lsvg -l " + testVG: lsvgL(testLV + "    jfs2       1599    1599    1    closed/syncd  N/A"),
+		"lsfs -c":           stanzas(),
+	}}
+	if _, err := newManager(f, make([]byte, BlankCheckBytes)).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS2, testMP); err != nil {
+		t.Fatal(err)
+	}
+	mustCall(t, f, "crfs -v jfs2 -d "+testLV+" -m "+testMP+" -A no -p rw -a logname=INLINE")
+	mustNotCall(t, f, "mklv")
+
+	written := make([]byte, BlankCheckBytes)
+	written[4096] = 1
+	g := &fakeRunner{out: f.out}
+	if _, err := newManager(g, written).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS2, testMP); err == nil {
+		t.Error("formatted a logical volume that holds data")
+	}
+	mustNotCall(t, g, "crfs")
+}
+
+func TestHasVGDA(t *testing.T) {
+	m := newManager(&fakeRunner{out: map[string]string{
+		"lqueryvg -p hdisk1 -v": "00c8b12f00004c000000017a1b2c3d4e\n",
+		"lqueryvg -p hdisk2 -v": "00000000000000000000000000000000\n",
+	}, fail: map[string]bool{"lqueryvg -p hdisk3 -v": true}}, nil)
+	ctx := context.Background()
+	if !m.hasVGDA(ctx, "hdisk1") || m.hasVGDA(ctx, "hdisk2") || m.hasVGDA(ctx, "hdisk3") {
+		t.Error("hasVGDA")
+	}
+}
+
+func TestReleaseAndRemove(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{"lspv": lspv(testVG), "lsvg -o": "rootvg\n"}}
+	if err := newManager(f, nil).ReleaseAndRemove(context.Background(), testDisk); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"lspv", "lsvg -o", "exportvg " + testVG, "rmdev -dl hdisk4"}
+	if !reflect.DeepEqual(f.calls, want) {
+		t.Errorf("calls %v, want %v", f.calls, want)
+	}
+	g := &fakeRunner{out: map[string]string{"lspv": lspv("rootvg")}}
+	if err := newManager(g, nil).ReleaseAndRemove(context.Background(), testDisk); err == nil {
+		t.Error("removed a rootvg disk")
+	}
+	mustNotCall(t, g, "rmdev")
+}
+
+func TestStagedLV(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{"lsfs -c": stanzas(
+		"/data:/dev/fslv00:jfs2:::0:rw:yes:no",
+		testMP+":/dev/"+testLV+":jfs2:::0:rw:no:no")}}
+	m := newManager(f, nil)
+	if lv, err := m.StagedLV(context.Background(), testMP); err != nil || lv != testLV {
+		t.Errorf("got %q %v", lv, err)
+	}
+	if lv, _ := m.StagedLV(context.Background(), "/data"); lv != "" {
+		t.Errorf("returned a logical volume the driver did not make: %q", lv)
+	}
+}
+
+func TestPrepareRefusesShortRead(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{"lspv": lspv(NoVG)}, fail: map[string]bool{"lqueryvg -p hdisk4 -v": true}}
+	if _, err := newManager(f, make([]byte, 512)).Prepare(context.Background(), testDisk, testWWN, FSTypeJFS2, testMP); err == nil {
+		t.Fatal("formatted a disk after reading only 512 bytes of it")
+	}
+	mustNotCall(t, f, "mkvg")
 }
