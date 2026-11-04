@@ -37,6 +37,7 @@ func main() {
 		driver.WithVolumeAttachLimit(options.NodeOptions.VolumeAttachLimit),
 		driver.WithKubeConfig(options.ServerOptions.Kubeconfig),
 		driver.WithCloudConfig(options.ServerOptions.Cloudconfig),
+		driver.WithKubeletRegistration(options.NodeOptions.KubeletRegistrationPath, options.NodeOptions.PluginRegistrationDir),
 	)
 	if err != nil {
 		klog.Fatalf("unable to create CSI driver. err: %v", err)

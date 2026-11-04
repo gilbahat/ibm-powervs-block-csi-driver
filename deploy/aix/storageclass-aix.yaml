@@ -1,0 +1,32 @@
+# StorageClasses for AIX nodes. The provisioner and controller are the same
+# as on Linux; fsType decides what the AIX node plugin makes: jfs2 (the AIX
+# default when fsType is unset) or jfs. Linux file systems (ext4, xfs) are
+# refused on AIX nodes, and AIX ones on Linux nodes.
+#
+# AIX nodes serve only single-node file system volumes: no raw block
+# volumes, and no ReadWriteMany/ReadOnlyMany (JFS and JFS2 are not cluster
+# file systems).
+#
+# mountOptions are passed to the AIX mount command, e.g. noatime, rbrw, cio.
+---
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: powervs-aix-jfs2
+provisioner: powervs.csi.ibm.com
+parameters:
+  type: tier3
+  csi.storage.k8s.io/fstype: jfs2
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: powervs-aix-jfs
+provisioner: powervs.csi.ibm.com
+parameters:
+  type: tier3
+  csi.storage.k8s.io/fstype: jfs
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true

@@ -67,6 +67,11 @@ type Options struct {
 	debug             bool
 	kubeconfig        string
 	cloudconfig       string
+
+	// kubeletRegistrationPath, when set, makes the node plugin register
+	// itself with the kubelet (see registration.go).
+	kubeletRegistrationPath string
+	pluginRegistrationDir   string
 }
 
 func NewDriver(options ...func(*Options)) (*Driver, error) {
@@ -141,6 +146,14 @@ func (d *Driver) Run() error {
 		return fmt.Errorf("unknown mode: %s", d.options.mode)
 	}
 
+	csiSocket := ""
+	if scheme == "unix" {
+		csiSocket = addr
+	}
+	if err := d.startKubeletRegistration(csiSocket); err != nil {
+		return fmt.Errorf("kubelet registration: %w", err)
+	}
+
 	klog.Infof("Listening for connections on address: %#v", listener.Addr())
 	return d.srv.Serve(listener)
 }
@@ -183,5 +196,14 @@ func WithKubeConfig(kubeconfig string) func(*Options) {
 func WithCloudConfig(cloudconfig string) func(*Options) {
 	return func(o *Options) {
 		o.cloudconfig = cloudconfig
+	}
+}
+
+// WithKubeletRegistration makes the node plugin register itself with the
+// kubelet, advertising csiSocketPath, through a socket in registrationDir.
+func WithKubeletRegistration(csiSocketPath, registrationDir string) func(*Options) {
+	return func(o *Options) {
+		o.kubeletRegistrationPath = csiSocketPath
+		o.pluginRegistrationDir = registrationDir
 	}
 }
